@@ -70,7 +70,42 @@ async function load(){try{let r=await fetch('/api/state');if(r.ok){state=await r
 async function save(){try{localStorage.setItem('sirius_state',JSON.stringify(state));let r=await fetch('/api/state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(state)});void r}catch(e){}render()}
 function render(){const logs=[...(state.messages||[])].slice(-30);liveLog.innerHTML=logs.map(m=>`<div class="log"><b>${m.role==='user'?'YOU':'SIRIUS'}:</b> ${esc(m.content)}</div>`).join('');chatMessages.innerHTML=logs.map(m=>`<div class="log"><b>${m.role==='user'?'YOU':'SIRIUS'}:</b> ${esc(m.content)}</div>`).join('');liveLog.scrollTop=liveLog.scrollHeight;chatMessages.scrollTop=chatMessages.scrollHeight;taskList.innerHTML=(state.tasks||[]).map((x,i)=>`<div class="item"><span>${esc(x.title)}</span><span><button class="btn" onclick="toggleTask(${i})">${x.done?'↩':'✓'}</button> <button class="btn danger" onclick="del('tasks',${i})">SİL</button></span></div>`).join('');eventList.innerHTML=(state.events||[]).map((x,i)=>`<div class="item"><span>${esc(x.title)} <small class="muted">${esc(x.date||'')}</small></span><button class="btn danger" onclick="del('events',${i})">SİL</button></div>`).join('');memoryList.innerHTML=(state.memories||[]).map((x,i)=>`<div class="item"><span>${esc(x.content)}</span><button class="btn danger" onclick="del('memories',${i})">SİL</button></div>`).join('');contactList.innerHTML=(state.contacts||[]).map((x,i)=>`<div class="item"><span>${esc(x.name)} <small class="muted">${esc(x.phone||'')}</small></span><button class="btn danger" onclick="del('contacts',${i})">SİL</button></div>`).join('');callList.innerHTML=(state.calls||[]).map((x,i)=>`<div class="item"><span>${esc(x.name)} — ${esc(x.reason||'')}</span><button class="btn danger" onclick="del('calls',${i})">SİL</button></div>`).join('')}
 function addLog(who,msg){state.messages=state.messages||[];state.messages.push({role:who==='YOU'?'user':'assistant',content:msg});save()}
-async function ask(v){v=(v||'').trim();if(!v)return;state.messages.push({role:'user',content:v});render();await save();setMode('thinking','THINKING');beep(520,.09);try{let hist=state.messages.slice(-20).map(x=>({role:x.role,content:x.content}));let ans='';let ok=false;try{let r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:hist})});let d=await r.json();ok=!!d.ok;ans=d.ok?d.content:''}catch(_){} if(!ans){ok=true;let q=v.toLowerCase();ans=q.includes('merhaba')?'Merhaba Merve. Mobil Sirius hazır.':q.includes('görev')?'Görevler bölümünü açabilirim.':'Şu an mobil demo modundayım. Gerçek AI bağlantısını bir sonraki adımda bağlayacağız.'} state.messages.push({role:'assistant',content:ans});await save();setMode('','STANDBY');if(voiceEnabled.checked&&ok)speakText(ans)}catch(e){state.messages.push({role:'assistant',content:'Bağlantı kurulamadı: '+e.message});await save();setMode('','STANDBY')}}
+async function ask(v){
+  v=(v||'').trim(); if(!v)return;
+  state.messages=state.messages||[];
+  state.messages.push({role:'user',content:v});
+  render(); await save();
+  setMode('thinking','THINKING'); beep(520,.09);
+
+  try{
+    const hist=state.messages.slice(-16).map(x=>({role:x.role,content:x.content}));
+    const r=await fetch('/api/chat',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:hist})
+    });
+
+    let d={};
+    try{ d=await r.json(); }catch(_){}
+
+    if(!r.ok || !d.ok){
+      const detail=d.error||('HTTP '+r.status);
+      throw new Error(detail);
+    }
+
+    const ans=(d.content||'').trim() || 'Yanıt alınamadı.';
+    state.messages.push({role:'assistant',content:ans});
+    await save();
+    setMode('speaking','SPEAKING');
+    if(voiceEnabled.checked) speakText(ans);
+    else setTimeout(()=>setMode('','STANDBY'),500);
+  }catch(e){
+    const msg='Gerçek AI bağlantısı kurulamadı: '+(e?.message||'Bilinmeyen hata');
+    state.messages.push({role:'assistant',content:msg});
+    await save();
+    setMode('','STANDBY');
+  }
+}
 function sendChat(){let v=chatInput.value;chatInput.value='';ask(v)}function quickSend(){let v=quickInput.value;quickInput.value='';ask(v)}chatInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendChat()}});quickInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();quickSend()}});
 function initRecognition(){let SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){alert('Bu tarayıcı konuşma tanımayı desteklemiyor. Edge veya Chrome deneyebilirsin.');return false}recognition=new SR();recognition.lang='tr-TR';recognition.continuous=true;recognition.interimResults=true;recognition.onstart=()=>{listening=true;listenBtn.textContent='● DİNLİYOR...';setMode('listening','LISTENING');beep(980,.06)};recognition.onresult=e=>{let final='';for(let i=e.resultIndex;i<e.results.length;i++)if(e.results[i].isFinal)final+=e.results[i][0].transcript;if(final){beep(760,.05);ask(final)}};recognition.onerror=e=>{deviceLog.textContent='Mikrofon: '+e.error};recognition.onend=()=>{listening=false;listenBtn.textContent='● LIVE / DİNLE';if(!speechSynthesis.speaking)setMode('','STANDBY')};return true}
 function toggleListen(){if(!recognition&&!initRecognition())return;if(listening){recognition.stop()}else{try{recognition.start()}catch(e){}}}

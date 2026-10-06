@@ -187,13 +187,52 @@ function toggleConversation(){
 function loadVoices(){let vs=speechSynthesis.getVoices();voiceSelect.innerHTML=vs.map((v,i)=>`<option value="${i}">${esc(v.name)} — ${esc(v.lang)}</option>`).join('');let tr=vs.findIndex(v=>v.lang.toLowerCase().startsWith('tr'));if(tr>=0)voiceSelect.value=tr}speechSynthesis.onvoiceschanged=loadVoices;loadVoices();
 function stopVoice(){liveLoop=false;conversationMode=false;speakingNow=false;speechSynthesis.cancel();try{if(currentAudio){currentAudio.pause();currentAudio=null}}catch(e){}if(recognition&&listening)recognition.stop();setMode('','STANDBY')}
 function afterSpeak(){speakingNow=false;if(currentAudio){currentAudio=null}if(conversationMode||liveLoop){setMode('listening','LISTENING');setTimeout(()=>{try{recognition&&recognition.start()}catch(e){}},450)}else setMode('','STANDBY')}
-function siriusB64(b64){let s=atob(b64),a=new Uint8Array(s.length);for(let i=0;i<s.length;i++)a[i]=s.charCodeAt(i);return a}
-function siriusWav(pcm,rate){let buf=new ArrayBuffer(44+pcm.length),v=new DataView(buf),w=(o,t)=>{for(let i=0;i<t.length;i++)v.setUint8(o+i,t.charCodeAt(i))};w(0,'RIFF');v.setUint32(4,36+pcm.length,true);w(8,'WAVE');w(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,rate,true);v.setUint32(28,rate*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,'data');v.setUint32(40,pcm.length,true);return URL.createObjectURL(new Blob([buf],{type:'audio/wav'}))}
-async function speakText(t){setMode('speaking','SPEAKING');beep(620,.05);speakingNow=true;try{if(recognition&&listening)recognition.stop()}catch(e){}
-let clean=(t||'').replace(/[*#_`>|]/g,'');
-try{let r=await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:clean.slice(0,750)})});
-if(r.ok){let j=await r.json();if(j&&j.ok&&j.audio){currentAudio=new Audio(siriusWav(siriusB64(j.audio),j.rate||24000));currentAudio.onended=currentAudio.onerror=afterSpeak;await currentAudio.play();return}}}catch(e){}
-try{let u=new SpeechSynthesisUtterance(clean);let vs=speechSynthesis.getVoices(),idx=+voiceSelect.value;if(vs[idx])u.voice=vs[idx];u.lang=(vs[idx]?.lang)||'tr-TR';u.rate=.98;u.pitch=.88;u.onend=u.onerror=afterSpeak;speechSynthesis.speak(u)}catch(e){afterSpeak()}}
+function siriusB64(b64){
+  const s=atob(b64),a=new Uint8Array(s.length);
+  for(let i=0;i<s.length;i++)a[i]=s.charCodeAt(i);
+  return a;
+}
+function audioUrlFromResponse(j){
+  const bytes=siriusB64(j.audio);
+  const mime=j.mime||'audio/wav';
+  const blob=new Blob([bytes],{type:mime});
+  return URL.createObjectURL(blob);
+}
+async function speakText(t){
+  setMode('speaking','SPEAKING'); beep(620,.05); speakingNow=true;
+  try{if(recognition&&listening)recognition.stop()}catch(e){}
+  const clean=(t||'').replace(/[*#_`>|]/g,'').trim();
+  if(!clean){afterSpeak();return}
+  let ttsError='';
+  try{
+    const r=await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:clean.slice(0,750)})});
+    let j={}; try{j=await r.json()}catch(_){}
+    if(!r.ok||!j.ok||!j.audio) throw new Error(j.error||('TTS HTTP '+r.status));
+    const url=audioUrlFromResponse(j);
+    currentAudio=new Audio();
+    currentAudio.preload='auto';
+    currentAudio.src=url;
+    currentAudio.onended=()=>{URL.revokeObjectURL(url);afterSpeak()};
+    currentAudio.onerror=()=>{URL.revokeObjectURL(url);const e=new Error('Tarayıcı sesi oynatamadı');currentAudio=null;ttsError=e.message;fallbackSpeech(clean,ttsError)};
+    await currentAudio.play();
+    return;
+  }catch(e){ttsError=e?.message||'TTS başarısız'}
+  fallbackSpeech(clean,ttsError);
+}
+function fallbackSpeech(clean,reason){
+  try{
+    const vs=speechSynthesis.getVoices();
+    let idx=Number(voiceSelect.value);
+    if(!Number.isFinite(idx)||!vs[idx])idx=vs.findIndex(v=>v.lang?.toLowerCase().startsWith('tr'));
+    const u=new SpeechSynthesisUtterance(clean);
+    if(vs[idx])u.voice=vs[idx];
+    u.lang=vs[idx]?.lang||'tr-TR'; u.rate=.98; u.pitch=.88;
+    u.onend=afterSpeak; u.onerror=()=>afterSpeak();
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  }catch(e){
+    console.warn('SIRIUS TTS:',reason,e); afterSpeak();
+  }
+}
 async function loadHardware(){try{let h=await fetch('/api/hardware').then(r=>r.json());let cpu=Math.round(h.cpuLoad||0),ram=Math.round(h.memoryPct||0),disk=Math.round(h.diskPct||0);cpuPct.textContent=cpu+'%';ramPct.textContent=ram+'%';diskPct.textContent=disk+'%';cpuBar.style.width=cpu+'%';ramBar.style.width=ram+'%';diskBar.style.width=disk+'%';cores.textContent=h.logicalProcessors||navigator.hardwareConcurrency||'--';hwCpu.textContent=cpu+'%';hwCpuName.textContent=h.cpuName||'CPU';hwRam.textContent=ram+'%';hwRamDetail.textContent=(h.memoryUsedGB||'?')+' / '+(h.memoryTotalGB||'?')+' GB';hwGpu.textContent=h.gpuName||'--';hwDisk.textContent=disk+'%';hwDiskDetail.textContent=(h.diskUsedGB||'?')+' / '+(h.diskTotalGB||'?')+' GB';hwOs.textContent=[h.osCaption,h.osVersion,h.computerName].filter(Boolean).join(' · ')}catch(e){hwOs.textContent='Donanım telemetrisi okunamadı: '+e.message}}
 setInterval(loadHardware,5000);loadHardware();
 async function testMic(){try{let s=await navigator.mediaDevices.getUserMedia({audio:true});deviceLog.textContent='Mikrofon hazır: '+(s.getAudioTracks()[0]?.label||'izin verildi');s.getTracks().forEach(t=>t.stop())}catch(e){deviceLog.textContent='Mikrofon erişimi: '+e.message}}

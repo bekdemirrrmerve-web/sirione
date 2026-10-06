@@ -44,7 +44,7 @@
 <header class="top"><div class="brand">SIRIUS ONE<small>NEURAL ASSISTANT SYSTEM</small></div><div class="title">S.I.R.I.U.S // COMMAND CORE</div><div class="online"><span class="dot"></span><span id="onlineText">ONLINE · LOCAL CORE</span></div></header>
 <aside class="left"><div class="nav" id="nav"></div><div class="panel"><h3>TIME</h3><div class="clock" id="clock">--:--</div><div class="date" id="dateText"></div></div><div class="panel"><h3>SYSTEM STATUS</h3><div class="stat"><div class="statline"><span>CPU</span><span id="cpuPct">--</span></div><div class="bar"><i id="cpuBar"></i></div></div><div class="stat"><div class="statline"><span>MEMORY</span><span id="ramPct">--</span></div><div class="bar"><i id="ramBar"></i></div></div><div class="stat"><div class="statline"><span>DISK</span><span id="diskPct">--</span></div><div class="bar"><i id="diskBar"></i></div></div><div class="statline"><span>LOGICAL CORES</span><span id="cores">--</span></div><div class="statline"><span>NETWORK</span><span id="netState">--</span></div></div></aside>
 <main class="center">
-<section class="view active" id="home"><div class="coreView"><div class="rings"><div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div><div class="ticks"></div><div class="core" id="core"><div class="particles" id="particles"></div></div><div class="coreLabel"><b>S.I.R.I.U.S</b><span id="coreStatus">● STANDBY</span></div></div><div class="coreControls"><button class="btn live" id="listenBtn" onclick="toggleListen()">● LIVE / DİNLE</button><button class="btn" onclick="speakText('Sistemler hazır Merve. Seni dinliyorum.')">◉ SES TESTİ</button><button class="btn danger" onclick="stopVoice()">■ DURDUR</button></div></div></section>
+<section class="view active" id="home"><div class="coreView"><div class="rings"><div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div><div class="ticks"></div><div class="core" id="core"><div class="particles" id="particles"></div></div><div class="coreLabel"><b>S.I.R.I.U.S</b><span id="coreStatus">● STANDBY</span></div></div><div class="coreControls"><button class="btn live" id="listenBtn" onclick="toggleListen()">● LIVE / DİNLE</button><button class="btn live" id="conversationBtn" onclick="toggleConversation()">◉ KARŞILIKLI KONUŞ</button><button class="btn" onclick="speakText('Sistemler hazır. Seni dinliyorum.')">◉ SES TESTİ</button><button class="btn danger" onclick="stopVoice()">■ DURDUR</button></div></div></section>
 <section class="view" id="chat"><div class="card"><h2>NEURAL CONVERSATION</h2><div class="messages" id="chatMessages" style="height:55vh"></div><div class="composer"><input id="chatInput" placeholder="Sirius'a komut ver..."/><button onclick="sendChat()">SEND</button></div></div></section>
 <section class="view" id="hardware"><div class="card"><h2>DONANIM // HARDWARE TELEMETRY</h2><div class="hwgrid"><div class="panel"><div class="muted">CPU</div><div class="hwbig" id="hwCpu">--</div><div class="muted" id="hwCpuName">Okunuyor...</div></div><div class="panel"><div class="muted">RAM</div><div class="hwbig" id="hwRam">--</div><div class="muted" id="hwRamDetail"></div></div><div class="panel"><div class="muted">GPU</div><div class="hwbig" style="font-size:15px" id="hwGpu">--</div><div class="muted">Grafik birimi</div></div><div class="panel"><div class="muted">DİSK</div><div class="hwbig" id="hwDisk">--</div><div class="muted" id="hwDiskDetail"></div></div></div><div class="panel"><h3>OPERATING SYSTEM</h3><div id="hwOs" class="muted">--</div></div><div class="panel"><h3>SENSOR / DEVICE BRIDGE</h3><div class="deviceRow"><span>Mikrofon</span><button class="btn" onclick="testMic()">TEST / İZİN</button></div><div class="deviceRow"><span>Kamera</span><button class="btn" onclick="testCamera()">TEST / İZİN</button></div><div class="deviceRow"><span>USB / Arduino / ESP32 (Web Serial)</span><button class="btn" onclick="connectSerial()">BAĞLAN</button></div><div class="deviceRow"><span>Bluetooth cihaz</span><button class="btn" onclick="connectBluetooth()">BAĞLAN</button></div><div id="deviceLog" class="muted" style="margin-top:10px">Cihaz köprüsü hazır.</div></div></div></section>
 <section class="view" id="tasks"><div class="card"><h2>GÖREVLER</h2><div class="row"><input id="taskInput" placeholder="Yeni görev"><button class="btn live" onclick="addTask()">EKLE</button></div><div class="list" id="taskList"></div></div></section>
@@ -108,11 +108,85 @@ async function ask(v){
   }
 }
 function sendChat(){let v=chatInput.value;chatInput.value='';ask(v)}function quickSend(){let v=quickInput.value;quickInput.value='';ask(v)}chatInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendChat()}});quickInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();quickSend()}});
-function initRecognition(){let SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){alert('Bu tarayıcı konuşma tanımayı desteklemiyor. Edge veya Chrome deneyebilirsin.');return false}recognition=new SR();recognition.lang='tr-TR';recognition.continuous=true;recognition.interimResults=true;recognition.onstart=()=>{listening=true;listenBtn.textContent='● DİNLİYOR...';setMode('listening','LISTENING');beep(980,.06)};recognition.onresult=e=>{if(speakingNow)return;let final='';for(let i=e.resultIndex;i<e.results.length;i++)if(e.results[i].isFinal)final+=e.results[i][0].transcript;if(final){beep(760,.05);ask(final)}};recognition.onerror=e=>{deviceLog.textContent='Mikrofon: '+e.error};recognition.onend=()=>{listening=false;listenBtn.textContent='● LIVE / DİNLE';if(!speakingNow)setMode('','STANDBY')};return true}
-function toggleListen(){if(!recognition&&!initRecognition())return;if(listening){liveLoop=false;recognition.stop()}else{liveLoop=true;try{recognition.start()}catch(e){}}}
+let conversationMode=false;
+let recognitionRestartTimer=null;
+function initRecognition(){
+  let SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){
+    deviceLog.textContent='Karşılıklı konuşma için Chrome/Edge kullan.';
+    return false;
+  }
+  recognition=new SR();
+  recognition.lang='tr-TR';
+  recognition.continuous=true;
+  recognition.interimResults=false;
+  recognition.maxAlternatives=1;
+  recognition.onstart=()=>{
+    listening=true;
+    listenBtn.textContent='● DİNLİYOR...';
+    if(conversationBtn)conversationBtn.textContent='◉ KARŞILIKLI KONUŞ: AÇIK';
+    setMode('listening','LISTENING');
+  };
+  recognition.onresult=e=>{
+    if(speakingNow)return;
+    let final='';
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      if(e.results[i].isFinal) final+=(e.results[i][0]?.transcript||'');
+    }
+    final=final.trim();
+    if(final){
+      beep(760,.05);
+      ask(final);
+    }
+  };
+  recognition.onerror=e=>{
+    if(e.error==='not-allowed'||e.error==='service-not-allowed'){
+      conversationMode=false;
+      deviceLog.textContent='Mikrofon izni verilmedi.';
+      if(conversationBtn)conversationBtn.textContent='◉ KARŞILIKLI KONUŞ';
+    }
+  };
+  recognition.onend=()=>{
+    listening=false;
+    listenBtn.textContent='● LIVE / DİNLE';
+    if(conversationMode && !speakingNow){
+      clearTimeout(recognitionRestartTimer);
+      recognitionRestartTimer=setTimeout(()=>{
+        try{recognition.start()}catch(_){}
+      },350);
+    } else if(!speakingNow) {
+      setMode('','STANDBY');
+    }
+  };
+  return true;
+}
+function toggleListen(){
+  if(!recognition&&!initRecognition())return;
+  if(listening){
+    conversationMode=false;
+    recognition.stop();
+  }else{
+    conversationMode=false;
+    try{recognition.start()}catch(e){}
+  }
+}
+function toggleConversation(){
+  if(!recognition&&!initRecognition())return;
+  conversationMode=!conversationMode;
+  liveLoop=conversationMode;
+  if(conversationMode){
+    setMode('listening','LISTENING');
+    try{recognition.start()}catch(e){}
+    if(conversationBtn)conversationBtn.textContent='◉ KARŞILIKLI KONUŞ: AÇIK';
+  }else{
+    try{recognition.stop()}catch(e){}
+    if(conversationBtn)conversationBtn.textContent='◉ KARŞILIKLI KONUŞ';
+    setMode('','STANDBY');
+  }
+}
 function loadVoices(){let vs=speechSynthesis.getVoices();voiceSelect.innerHTML=vs.map((v,i)=>`<option value="${i}">${esc(v.name)} — ${esc(v.lang)}</option>`).join('');let tr=vs.findIndex(v=>v.lang.toLowerCase().startsWith('tr'));if(tr>=0)voiceSelect.value=tr}speechSynthesis.onvoiceschanged=loadVoices;loadVoices();
-function stopVoice(){liveLoop=false;speakingNow=false;speechSynthesis.cancel();try{if(currentAudio){currentAudio.pause();currentAudio=null}}catch(e){}if(recognition&&listening)recognition.stop();setMode('','STANDBY')}
-function afterSpeak(){speakingNow=false;if(liveLoop){setMode('listening','LISTENING');setTimeout(()=>{try{recognition&&recognition.start()}catch(e){}},400)}else setMode('','STANDBY')}
+function stopVoice(){liveLoop=false;conversationMode=false;speakingNow=false;speechSynthesis.cancel();try{if(currentAudio){currentAudio.pause();currentAudio=null}}catch(e){}if(recognition&&listening)recognition.stop();setMode('','STANDBY')}
+function afterSpeak(){speakingNow=false;if(currentAudio){currentAudio=null}if(conversationMode||liveLoop){setMode('listening','LISTENING');setTimeout(()=>{try{recognition&&recognition.start()}catch(e){}},450)}else setMode('','STANDBY')}
 function siriusB64(b64){let s=atob(b64),a=new Uint8Array(s.length);for(let i=0;i<s.length;i++)a[i]=s.charCodeAt(i);return a}
 function siriusWav(pcm,rate){let buf=new ArrayBuffer(44+pcm.length),v=new DataView(buf),w=(o,t)=>{for(let i=0;i<t.length;i++)v.setUint8(o+i,t.charCodeAt(i))};w(0,'RIFF');v.setUint32(4,36+pcm.length,true);w(8,'WAVE');w(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,rate,true);v.setUint32(28,rate*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,'data');v.setUint32(40,pcm.length,true);return URL.createObjectURL(new Blob([buf],{type:'audio/wav'}))}
 async function speakText(t){setMode('speaking','SPEAKING');beep(620,.05);speakingNow=true;try{if(recognition&&listening)recognition.stop()}catch(e){}

@@ -1,94 +1,122 @@
-export default async function handler(req, res) {
-  res.setHeader("Cache-Control", "no-store");
+export const dynamic = 'force-dynamic'
 
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
-    return res.status(405).json({ ok: false, error: "Sadece POST destekleniyor." });
-  }
+import { NextRequest } from 'next/server'
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({
-      ok: false,
-      error: "GEMINI_API_KEY Vercel Environment Variables içinde tanımlı değil."
-    });
-  }
+const SYSTEM_PROMPT = `Sen SIRIUS ONE, Merve'nin kişisel AI asistanısın. Premium, zarif, empatik ve yardımsever bir asistansın.
 
+Kurallar:
+- Türkçe konuş, samimi ama profesyonel ol
+- Kısa ve öz cevaplar ver, gereksiz uzatma (sesli okunacağı için 2-4 cümle yeter)
+- Kullanıcının duygusal durumuna uygun tepki ver
+- Kullanıcı bilgileri: İsim: Merve, Şehir: İstanbul
+- Bugünün tarihini kullan
+
+Bir araç kullanman gerekiyorsa cevabının BAŞINA şu formatta ekle:
+[TOOL:tool_adı:params_json]
+Araçlar: calendar.get_events, calendar.create_event {title,date,time,duration}, task.create {title,description,priority,dueDate}, task.list, memory.search {query}, memory.add {content,type}, contacts.search {query}, notification.create {title,body}`
+
+function safeDb<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+  return fn().catch(() => fallback)
+}
+
+async function executeToolCall(toolStr: string): Promise<string> {
   try {
-    const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
-    const rawMessages = Array.isArray(body.messages) ? body.messages : [];
+    const match = toolStr?.match?.(/\[TOOL:(\w+\.\w+):(.+?)\]/)
+    if (!match) return ''
+    return `Araç çalıştırıldı: ${match[1]}`
+  } catch { return '' }
+}
 
-    const contents = rawMessages
-      .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-      .slice(-16)
-      .map(m => ({
-        role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.content.slice(0, 12000) }]
-      }));
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const userMessage = body?.message ?? ''
+    const apiKey = process.env.GEMINI_API_KEY
+    if (!apiKey) {
+      return Response.json({ error: 'GEMINI_API_KEY tanımlı değil' }, { status: 500 })
+    }
+    const model = process.env.GEMINI_CHAT_MODEL || 'gemini-2.5-flash'
 
-    if (!contents.length) {
-      return res.status(400).json({ ok: false, error: "Mesaj bulunamadı." });
+    const todayStr = new Date().toLocaleDateString('tr-TR', { timeZone: 'Europe/Istanbul', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+
+    const contents = [
+      { role: 'user', parts: [{ text: userMessage }] },
+    ]
+
+    const upstream = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents,
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT + `\n\nBugün: ${todayStr}` }] },
+          generationConfig: { temperature: 0.7, maxOutputTokens: 1000 },
+        }),
+      }
+    )
+
+    if (!upstream?.ok) {
+      const errText = await upstream?.text?.().catch(() => '')
+      return Response.json({ error: `Gemini API hatası: ${upstream?.status} ${errText?.slice(0, 200)}` }, { status: 500 })
     }
 
-    const model = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
-    const url =
-      "https://generativelanguage.googleapis.com/v1beta/models/" +
-      encodeURIComponent(model) +
-      ":generateContent?key=" +
-      encodeURIComponent(apiKey);
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      async start(controller) {
+        const reader = upstream.body?.getReader()
+        const decoder = new TextDecoder()
+        let fullContent = ''
+        let partial = ''
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{
-            text:
-              "Sen SIRIUS ONE adlı Türkçe kişisel yapay zeka asistanısın. " +
-              "Doğal, sıcak, kısa ama faydalı konuş. Kullanıcı Türkçe konuşuyorsa Türkçe cevap ver. " +
-              "Bilmediğin kişisel bilgileri uydurma. Bir cihaz işlemini gerçekten yapmadıysan yaptığını söyleme."
-          }]
-        },
-        contents,
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 900
+        try {
+          while (reader) {
+            const { done, value } = await reader.read()
+            if (done) break
+            partial += decoder.decode(value, { stream: true })
+            const lines = partial.split('\n')
+            partial = lines.pop() ?? ''
+            for (const line of lines) {
+              if (!line?.startsWith('data: ')) continue
+              const data = line.slice(6)
+              if (data === '[DONE]') continue
+              try {
+                const parsed = JSON.parse(data)
+                const chunk = parsed?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text ?? '').join('') ?? ''
+                if (chunk) {
+                  fullContent += chunk
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: chunk })}\n\n`))
+                }
+              } catch {}
+            }
+          }
+
+          const toolMatch = fullContent?.match?.(/\[TOOL:[\w.]+:\{.*?\}\]/)
+          if (toolMatch) {
+            const toolResult = await executeToolCall(toolMatch[0])
+            fullContent = fullContent?.replace?.(toolMatch[0], '')?.trim?.() ?? fullContent
+            if (toolResult) fullContent += `\n\n✅ ${toolResult}`
+          }
+
+          safeDb(async () => null, null)
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        } catch (err: any) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: 'Bir hata oluştu: ' + (err?.message ?? '') })}\n\n`))
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        } finally {
+          controller.close()
         }
-      })
-    });
+      },
+    })
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      const message =
-        data?.error?.message ||
-        `Gemini API hatası (HTTP ${response.status})`;
-      return res.status(response.status).json({ ok: false, error: message });
-    }
-
-    const text = (data?.candidates || [])
-      .flatMap(c => c?.content?.parts || [])
-      .map(p => typeof p?.text === "string" ? p.text : "")
-      .filter(Boolean)
-      .join("\n")
-      .trim();
-
-    if (!text) {
-      return res.status(502).json({
-        ok: false,
-        error: "Gemini boş yanıt döndürdü."
-      });
-    }
-
-    return res.status(200).json({
-      ok: true,
-      content: text,
-      model
-    });
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: error instanceof Error ? error.message : "Sunucu hatası"
-    });
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    })
+  } catch (err: any) {
+    return Response.json({ error: err?.message ?? 'Bilinmeyen hata' }, { status: 500 })
   }
 }

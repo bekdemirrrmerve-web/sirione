@@ -9,7 +9,8 @@ export default async function handler(req, res) {
     if (!text.trim()) return res.status(400).json({ ok: false, error: 'Metin boş' })
 
     const voice = process.env.GEMINI_TTS_VOICE || 'Aoede'
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`, {
+    const model = process.env.GEMINI_TTS_MODEL || 'gemini-2.5-flash-preview-tts'
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

@@ -58,7 +58,7 @@
 </div>
 <script>
 const navs=[['home','◉ ANA ÇEKİRDEK'],['chat','⌁ SOHBET'],['hardware','▦ DONANIM'],['tasks','✓ GÖREVLER'],['calendar','◇ TAKVİM'],['memory','◫ HAFIZA'],['calls','☎ ARAMALAR'],['contacts','◎ KİŞİLER'],['settings','⚙ AYARLAR']];
-let state={messages:[],tasks:[],memories:[],events:[],contacts:[],calls:[],settings:{}};let recognition=null,listening=false,speakingNow=false,liveLoop=false,currentAudio=null;const nav=document.getElementById('nav');
+let state={messages:[],tasks:[],memories:[],events:[],contacts:[],calls:[],settings:{}};let recognition=null,listening=false,speakingNow=false,liveLoop=false,currentAudio=null;let liveSocket=null,liveMicStream=null,liveSourceNode=null,liveProcessorNode=null,liveMuteGain=null,liveAudioCtx=null,liveConnected=false,liveSetupReady=false,liveNextPlayTime=0,liveOutputText='',liveInputText='';let livePlaybackSources=[];const nav=document.getElementById('nav');
 navs.forEach(([id,label])=>{let b=document.createElement('button');b.textContent=label;b.dataset.id=id;b.onclick=()=>go(id);if(id==='home')b.classList.add('active');nav.appendChild(b)});
 function go(id){document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById(id).classList.add('active');document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.id===id));if(id==='hardware')loadHardware()}
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
@@ -110,84 +110,124 @@ async function ask(v){
 function sendChat(){let v=chatInput.value;chatInput.value='';ask(v)}function quickSend(){let v=quickInput.value;quickInput.value='';ask(v)}chatInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendChat()}});quickInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();quickSend()}});
 let conversationMode=false;
 let recognitionRestartTimer=null;
+
 function initRecognition(){
   let SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){
-    deviceLog.textContent='Karşılıklı konuşma için Chrome/Edge kullan.';
-    return false;
-  }
-  recognition=new SR();
-  recognition.lang='tr-TR';
-  recognition.continuous=true;
-  recognition.interimResults=false;
-  recognition.maxAlternatives=1;
-  recognition.onstart=()=>{
-    listening=true;
-    listenBtn.textContent='● DİNLİYOR...';
-    if(conversationBtn)conversationBtn.textContent='◉ KARŞILIKLI KONUŞ: AÇIK';
-    setMode('listening','LISTENING');
-  };
-  recognition.onresult=e=>{
-    if(speakingNow)return;
-    let final='';
-    for(let i=e.resultIndex;i<e.results.length;i++){
-      if(e.results[i].isFinal) final+=(e.results[i][0]?.transcript||'');
-    }
-    final=final.trim();
-    if(final){
-      beep(760,.05);
-      ask(final);
-    }
-  };
-  recognition.onerror=e=>{
-    if(e.error==='not-allowed'||e.error==='service-not-allowed'){
-      conversationMode=false;
-      deviceLog.textContent='Mikrofon izni verilmedi.';
-      if(conversationBtn)conversationBtn.textContent='◉ KARŞILIKLI KONUŞ';
-    }
-  };
-  recognition.onend=()=>{
-    listening=false;
-    listenBtn.textContent='● LIVE / DİNLE';
-    if(conversationMode && !speakingNow){
-      clearTimeout(recognitionRestartTimer);
-      recognitionRestartTimer=setTimeout(()=>{
-        try{recognition.start()}catch(_){}
-      },350);
-    } else if(!speakingNow) {
-      setMode('','STANDBY');
-    }
-  };
+  if(!SR){deviceLog.textContent='Klasik dinleme için Chrome/Edge gerekli.';return false}
+  recognition=new SR(); recognition.lang='tr-TR'; recognition.continuous=true; recognition.interimResults=false; recognition.maxAlternatives=1;
+  recognition.onstart=()=>{listening=true;listenBtn.textContent='● DİNLİYOR...';setMode('listening','LISTENING')};
+  recognition.onresult=e=>{if(speakingNow)return;let final='';for(let i=e.resultIndex;i<e.results.length;i++){if(e.results[i].isFinal)final+=(e.results[i][0]?.transcript||'')}final=final.trim();if(final){beep(760,.05);ask(final)}};
+  recognition.onerror=e=>{if(e.error==='not-allowed'||e.error==='service-not-allowed'){deviceLog.textContent='Mikrofon izni verilmedi.'}};
+  recognition.onend=()=>{listening=false;listenBtn.textContent='● LIVE / DİNLE';if(!conversationMode&&!speakingNow)setMode('','STANDBY')};
   return true;
 }
 function toggleListen(){
   unlockAudio();
+  if(conversationMode){stopLiveConversation();return}
   if(!recognition&&!initRecognition())return;
-  if(listening){
-    conversationMode=false;
-    recognition.stop();
-  }else{
-    conversationMode=false;
-    try{recognition.start()}catch(e){}
-  }
+  if(listening)recognition.stop();else{try{recognition.start()}catch(e){}}
 }
-function toggleConversation(){
-  unlockAudio();
-  if(!recognition&&!initRecognition())return;
-  conversationMode=!conversationMode;
-  liveLoop=conversationMode;
-  if(conversationMode){
-    setMode('listening','LISTENING');
-    try{recognition.start()}catch(e){}
-    if(conversationBtn)conversationBtn.textContent='◉ KARŞILIKLI KONUŞ: AÇIK';
-  }else{
-    try{recognition.stop()}catch(e){}
-    if(conversationBtn)conversationBtn.textContent='◉ KARŞILIKLI KONUŞ';
-    setMode('','STANDBY');
-  }
+function pcm16ToBase64(float32){
+  const out=new Int16Array(float32.length);
+  for(let i=0;i<float32.length;i++){const s=Math.max(-1,Math.min(1,float32[i]));out[i]=s<0?s*0x8000:s*0x7fff}
+  const bytes=new Uint8Array(out.buffer);let binary='';
+  for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,Math.min(i+0x8000,bytes.length)));
+  return btoa(binary);
 }
+function downsampleTo16k(buffer,inputRate){
+  if(inputRate===16000)return buffer;
+  const ratio=inputRate/16000,newLen=Math.max(1,Math.round(buffer.length/ratio)),result=new Float32Array(newLen);
+  let offset=0;
+  for(let i=0;i<newLen;i++){const next=Math.min(buffer.length,Math.round((i+1)*ratio));let sum=0,count=0;for(let j=offset;j<next;j++){sum+=buffer[j];count++}result[i]=count?sum/count:0;offset=next}
+  return result;
+}
+function stopLivePlayback(){
+  livePlaybackSources.forEach(s=>{try{s.stop()}catch(e){}});
+  livePlaybackSources=[];liveNextPlayTime=0;speakingNow=false;
+}
+function playLivePcm(b64){
+  if(!liveAudioCtx)return;
+  const bytes=siriusB64(b64),pcm=new Int16Array(bytes.buffer,bytes.byteOffset,Math.floor(bytes.byteLength/2));
+  const buffer=liveAudioCtx.createBuffer(1,pcm.length,24000),data=buffer.getChannelData(0);
+  for(let i=0;i<pcm.length;i++)data[i]=pcm[i]/32768;
+  const src=liveAudioCtx.createBufferSource();src.buffer=buffer;src.connect(liveAudioCtx.destination);
+  liveNextPlayTime=Math.max(liveNextPlayTime,liveAudioCtx.currentTime+0.025);src.start(liveNextPlayTime);liveNextPlayTime+=buffer.duration;
+  livePlaybackSources.push(src);speakingNow=true;setMode('speaking','SPEAKING');
+  src.onended=()=>{livePlaybackSources=livePlaybackSources.filter(x=>x!==src);if(!livePlaybackSources.length&&liveConnected)setMode('listening','LISTENING')};
+}
+function addLiveTranscriptPreview(who,text){
+  const node=document.getElementById('liveLog');if(!node)return;
+  const rows=state.messages||[];
+  node.innerHTML=rows.slice(-12).map(m=>'<div class="log"><b>'+ (m.role==='user'?'YOU':'SIRIUS') +':</b> '+esc(m.content)+'</div>').join()+'<div class="log" style="opacity:.72"><b>'+esc(who)+':</b> '+esc(text)+'</div>';
+  node.scrollTop=node.scrollHeight;
+}
+function appendLiveInput(text){const t=(text||'').trim();if(!t)return;liveInputText+=liveInputText?' '+t:t;addLiveTranscriptPreview('YOU',liveInputText)}
+function appendLiveOutput(text){const t=(text||'').trim();if(!t)return;liveOutputText+=liveOutputText?' '+t:t;addLiveTranscriptPreview('SIRIUS',liveOutputText)}
+async function commitLiveTurn(){
+  const input=liveInputText.trim(),output=liveOutputText.trim();
+  if(input){state.messages=state.messages||[];state.messages.push({role:'user',content:input})}
+  if(output){state.messages=state.messages||[];state.messages.push({role:'assistant',content:output})}
+  liveInputText='';liveOutputText='';if(input||output)await save();
+}
+async function startLiveConversation(){
+  if(liveConnected)return;
+  unlockAudio();conversationMode=true;liveLoop=true;setMode('thinking','LIVE CONNECT');conversationBtn.textContent='◉ KARŞILIKLI KONUŞ: AÇIK';
+  try{
+    const tokenRes=await fetch('/api/live-token',{cache:'no-store'}),tokenData=await tokenRes.json().catch(()=>({}));
+    if(!tokenRes.ok||!tokenData.ok||!tokenData.token)throw new Error(tokenData.error||('Token HTTP '+tokenRes.status));
+    const C=window.AudioContext||window.webkitAudioContext;if(!C)throw new Error('Tarayıcı Web Audio desteklemiyor.');
+    liveAudioCtx=siriusAudioCtx||new C();siriusAudioCtx=liveAudioCtx;await liveAudioCtx.resume();
+    liveMicStream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    const wsUrl='wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained?access_token='+encodeURIComponent(tokenData.token);
+    liveSocket=new WebSocket(wsUrl);
+    liveSocket.onopen=()=>{
+      liveSocket.send(JSON.stringify({setup:{
+        model:'models/'+(tokenData.model||'gemini-3.8-live'),responseModalities:['AUDIO'],
+        systemInstruction:{parts:[{text:'Sen SIRIUS ONE, Merve’nin kişisel AI asistanısın. Türkçe konuş. Samimi, doğal, hızlı ve kısa cevaplar ver. Cevaplarını sesli konuşma için 1-3 cümle tut. Markdown, emoji ve gereksiz açıklama kullanma. Kullanıcı sözünü bitirmeden uzun monologlara girme. Gerçek bir insanla karşılıklı konuşuyormuş gibi davran; kullanıcı araya girerse hemen dur ve onu dinle.'}]},
+        inputAudioTranscription:{},outputAudioTranscription:{},speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:'Kore'}}}
+      }}));
+    };
+    liveSocket.onmessage=async ev=>{
+      let msg;try{msg=JSON.parse(ev.data)}catch(_){return}
+      if(msg.setupComplete!==undefined){liveSetupReady=true;startLiveCapture();setMode('listening','LISTENING');return}
+      const sc=msg.serverContent;if(!sc)return;
+      if(sc.interrupted){stopLivePlayback();setMode('listening','LISTENING')}
+      if(sc.inputTranscription?.text)appendLiveInput(sc.inputTranscription.text);
+      if(sc.interimInputTranscription?.text)appendLiveInput(sc.interimInputTranscription.text);
+      if(sc.outputTranscription?.text)appendLiveOutput(sc.outputTranscription.text);
+      for(const part of (sc.modelTurn?.parts||[])){if(part.inlineData?.data)playLivePcm(part.inlineData.data)}
+      if(sc.turnComplete){await commitLiveTurn();if(liveConnected&&!livePlaybackSources.length)setMode('listening','LISTENING')}
+    };
+    liveSocket.onerror=()=>{deviceLog.textContent='Gemini Live bağlantısında hata oluştu.'};
+    liveSocket.onclose=()=>{liveConnected=false;liveSetupReady=false;stopLiveCapture();if(conversationMode){conversationMode=false;liveLoop=false;conversationBtn.textContent='◉ KARŞILIKLI KONUŞ';setMode('','STANDBY')}};
+  }catch(e){console.error('Gemini Live:',e);deviceLog.textContent='Live bağlantısı: '+(e?.message||'Bilinmeyen hata');stopLiveConversation()}
+}
+function startLiveCapture(){
+  if(!liveMicStream||!liveAudioCtx||!liveSocket||liveProcessorNode)return;
+  liveSourceNode=liveAudioCtx.createMediaStreamSource(liveMicStream);
+  liveProcessorNode=liveAudioCtx.createScriptProcessor(4096,1,1);liveMuteGain=liveAudioCtx.createGain();liveMuteGain.gain.value=0;
+  liveSourceNode.connect(liveProcessorNode);liveProcessorNode.connect(liveMuteGain);liveMuteGain.connect(liveAudioCtx.destination);
+  liveProcessorNode.onaudioprocess=e=>{
+    if(!liveSetupReady||!liveSocket||liveSocket.readyState!==1)return;
+    const pcm=downsampleTo16k(e.inputBuffer.getChannelData(0),liveAudioCtx.sampleRate);
+    if(pcm.length)liveSocket.send(JSON.stringify({realtimeInput:{audio:{data:pcm16ToBase64(pcm),mimeType:'audio/pcm;rate=16000'}}}));
+  };
+  liveConnected=true;listening=true;listenBtn.textContent='● LIVE';
+}
+function stopLiveCapture(){
+  try{liveProcessorNode?.disconnect()}catch(e){}try{liveSourceNode?.disconnect()}catch(e){}try{liveMuteGain?.disconnect()}catch(e){}
+  liveProcessorNode=null;liveSourceNode=null;liveMuteGain=null;
+  if(liveMicStream){liveMicStream.getTracks().forEach(t=>t.stop());liveMicStream=null}
+  listening=false;listenBtn.textContent='● LIVE / DİNLE';
+}
+function stopLiveConversation(){
+  conversationMode=false;liveLoop=false;liveConnected=false;liveSetupReady=false;stopLiveCapture();stopLivePlayback();
+  try{if(liveSocket&&liveSocket.readyState<=1)liveSocket.close()}catch(e){}liveSocket=null;conversationBtn.textContent='◉ KARŞILIKLI KONUŞ';setMode('','STANDBY');
+}
+async function toggleConversation(){unlockAudio();if(conversationMode){stopLiveConversation();return}await startLiveConversation()}
+
 function loadVoices(){let vs=speechSynthesis.getVoices();voiceSelect.innerHTML=vs.map((v,i)=>`<option value="${i}">${esc(v.name)} — ${esc(v.lang)}</option>`).join('');let tr=vs.findIndex(v=>v.lang.toLowerCase().startsWith('tr'));if(tr>=0)voiceSelect.value=tr}speechSynthesis.onvoiceschanged=loadVoices;loadVoices();
-function stopVoice(){try{if(siriusAudioSource)siriusAudioSource.stop()}catch(e){} liveLoop=false;conversationMode=false;speakingNow=false;speechSynthesis.cancel();try{if(currentAudio){currentAudio.pause();currentAudio=null}}catch(e){}if(recognition&&listening)recognition.stop();setMode('','STANDBY')}
+function stopVoice(){try{if(siriusAudioSource)siriusAudioSource.stop()}catch(e){}if(conversationMode)stopLiveConversation();liveLoop=false;conversationMode=false;speakingNow=false;speechSynthesis.cancel();try{if(currentAudio){currentAudio.pause();currentAudio=null}}catch(e){}try{if(recognition&&listening)recognition.stop()}catch(e){}setMode('','STANDBY')}
 function afterSpeak(){speakingNow=false;if(currentAudio){currentAudio=null}if(conversationMode||liveLoop){setMode('listening','LISTENING');setTimeout(()=>{try{recognition&&recognition.start()}catch(e){}},450)}else setMode('','STANDBY')}
 let siriusAudioCtx=null,siriusAudioSource=null,siriusAudioBuffer=null;
 function unlockAudio(){

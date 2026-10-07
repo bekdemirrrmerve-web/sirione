@@ -193,7 +193,7 @@ async function startLiveConversation(){
       const sc=msg.serverContent;if(!sc)return;
       if(sc.interrupted){stopLivePlayback();setMode('listening','LISTENING')}
       if(sc.inputTranscription?.text)appendLiveInput(sc.inputTranscription.text);
-      if(sc.interimInputTranscription?.text)appendLiveInput(sc.interimInputTranscription.text);
+      if(sc.interimInputTranscription?.text) addLiveTranscriptPreview('YOU',((liveInputText?liveInputText+' ':'')+sc.interimInputTranscription.text).trim());
       if(sc.outputTranscription?.text)appendLiveOutput(sc.outputTranscription.text);
       for(const part of (sc.modelTurn?.parts||[])){if(part.inlineData?.data)playLivePcm(part.inlineData.data)}
       if(sc.turnComplete){await commitLiveTurn();if(liveConnected&&!livePlaybackSources.length)setMode('listening','LISTENING')}

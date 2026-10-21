@@ -55,9 +55,11 @@ export default async function handler(req, res) {
       ok: true,
       token: j.name,
       model,
+      voice,
       expiresAt: j.expireTime || null
     })
   } catch (e) {
     return res.status(500).json({ ok: false, error: e?.message || 'Bilinmeyen hata' })
   }
 }
+

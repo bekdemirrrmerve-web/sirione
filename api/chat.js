@@ -29,18 +29,28 @@ export default async function handler(req, res) {
     if (fixed.length === 0) return res.status(400).json({ ok: false, error: 'Mesaj boş' })
 
     const todayStr = new Date().toLocaleDateString('tr-TR', { timeZone: 'Europe/Istanbul', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+    const streaming = body.stream === true
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:${streaming ? 'streamGenerateContent?alt=sse&' : 'generateContent?'}key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         system_instruction: { parts: [{ text: SYSTEM_PROMPT + `\n\nBugün: ${todayStr}` }] },
         contents: fixed,
-        generationConfig: { temperature: 0.8, maxOutputTokens: 2048, thinkingConfig: { thinkingBudget: 0 } },
+        generationConfig: { temperature: 0.8, maxOutputTokens: 512, thinkingConfig: { thinkingBudget: 0 } },
       }),
     })
     if (!r.ok) {
       const t = await r.text().catch(() => '')
       return res.status(502).json({ ok: false, error: `Gemini ${r.status}: ${t.slice(0, 180)}` })
+    }
+    if (streaming) {
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-cache, no-transform')
+      res.flushHeaders?.()
+      const reader = r.body.getReader()
+      try { while (true) { const {done,value} = await reader.read(); if (done) break; res.write(value) } }
+      finally { await reader.cancel().catch(()=>{}); res.end() }
+      return
     }
     const j = await r.json()
     const content = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim()
@@ -50,3 +60,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ ok: false, error: e?.message || 'Bilinmeyen hata' })
   }
 }
+

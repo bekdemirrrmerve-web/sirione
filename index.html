@@ -58,7 +58,7 @@
 </div>
 <script>
 const navs=[['home','◉ ANA ÇEKİRDEK'],['chat','⌁ SOHBET'],['hardware','▦ DONANIM'],['tasks','✓ GÖREVLER'],['calendar','◇ TAKVİM'],['memory','◫ HAFIZA'],['calls','☎ ARAMALAR'],['contacts','◎ KİŞİLER'],['settings','⚙ AYARLAR']];
-let state={messages:[],tasks:[],memories:[],events:[],contacts:[],calls:[],settings:{}};let recognition=null,listening=false,speakingNow=false,liveLoop=false,currentAudio=null;let liveSocket=null,liveMicStream=null,liveSourceNode=null,liveProcessorNode=null,liveMuteGain=null,liveAudioCtx=null,liveConnected=false,liveSetupReady=false,liveNextPlayTime=0,liveOutputText='',liveInputText='';let livePlaybackSources=[];const nav=document.getElementById('nav');
+let state={messages:[],tasks:[],memories:[],events:[],contacts:[],calls:[],settings:{}};let recognition=null,listening=false,speakingNow=false,liveLoop=false,currentAudio=null;let liveSocket=null,liveMicStream=null,liveSourceNode=null,liveProcessorNode=null,liveMuteGain=null,liveAudioCtx=null,liveConnected=false,liveSetupReady=false,liveNextPlayTime=0,liveOutputText='',liveInputText='';let liveSessionId=0,liveConnectTimer=null;let livePlaybackSources=[];const nav=document.getElementById('nav');
 navs.forEach(([id,label])=>{let b=document.createElement('button');b.textContent=label;b.dataset.id=id;b.onclick=()=>go(id);if(id==='home')b.classList.add('active');nav.appendChild(b)});
 function go(id){document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById(id).classList.add('active');document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.id===id));if(id==='hardware')loadHardware()}
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
@@ -171,7 +171,8 @@ async function commitLiveTurn(){
 }
 async function startLiveConversation(){
   if(liveConnected)return;
-  unlockAudio();conversationMode=true;liveLoop=true;setMode('thinking','LIVE CONNECT');conversationBtn.textContent='◉ KARŞILIKLI KONUŞ: AÇIK';
+  const sessionId=++liveSessionId;
+  unlockAudio();try{recognition?.stop()}catch(e){}speechSynthesis.cancel();conversationMode=true;liveLoop=true;setMode('thinking','LIVE CONNECT');conversationBtn.textContent='◉ KARŞILIKLI KONUŞ: AÇIK';
   try{
     const tokenRes=await fetch('/api/live-token',{cache:'no-store'}),tokenData=await tokenRes.json().catch(()=>({}));
     if(!tokenRes.ok||!tokenData.ok||!tokenData.token)throw new Error(tokenData.error||('Token HTTP '+tokenRes.status));
@@ -180,32 +181,33 @@ async function startLiveConversation(){
     liveMicStream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
     const wsUrl='wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained?access_token='+encodeURIComponent(tokenData.token);
     liveSocket=new WebSocket(wsUrl);
-    liveSocket.onopen=()=>{
+    liveConnectTimer=setTimeout(()=>{if(sessionId===liveSessionId&&!liveSetupReady){deviceLog.textContent='Canlı bağlantı kurulamadı. Yeniden dene.';stopLiveConversation()}},12000);
+    liveSocket.onopen=()=>{if(sessionId!==liveSessionId)return;
       liveSocket.send(JSON.stringify({setup:{
         model:'models/'+(tokenData.model||'gemini-3.8-live'),responseModalities:['AUDIO'],
         systemInstruction:{parts:[{text:'Sen SIRIUS ONE, Merve’nin kişisel AI asistanısın. Türkçe konuş. Samimi, doğal, hızlı ve kısa cevaplar ver. Cevaplarını sesli konuşma için 1-3 cümle tut. Markdown, emoji ve gereksiz açıklama kullanma. Kullanıcı sözünü bitirmeden uzun monologlara girme. Gerçek bir insanla karşılıklı konuşuyormuş gibi davran; kullanıcı araya girerse hemen dur ve onu dinle.'}]},
-        inputAudioTranscription:{},outputAudioTranscription:{},speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:(tokenData.voice || 'Kore')}}}
+        realtimeInputConfig:{automaticActivityDetection:{disabled:false,startOfSpeechSensitivity:'START_SENSITIVITY_HIGH',endOfSpeechSensitivity:'END_SENSITIVITY_HIGH',prefixPaddingMs:100,silenceDurationMs:500},activityHandling:'START_OF_ACTIVITY_INTERRUPTS'},inputAudioTranscription:{},outputAudioTranscription:{},speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:(tokenData.voice || 'Kore')}}}
       }}));
     };
-    liveSocket.onmessage=async ev=>{
+    liveSocket.onmessage=async ev=>{if(sessionId!==liveSessionId)return;
       let msg;try{msg=JSON.parse(typeof ev.data === 'string' ? ev.data : await ev.data.text())}catch(_){return}
-      if(msg.setupComplete!==undefined){liveSetupReady=true;startLiveCapture();setMode('listening','LISTENING');return}
+      if(msg.setupComplete!==undefined){clearTimeout(liveConnectTimer);liveSetupReady=true;startLiveCapture();setMode('listening','LISTENING');return}
       const sc=msg.serverContent;if(!sc)return;
       if(sc.interrupted){stopLivePlayback();setMode('listening','LISTENING')}
       if(sc.inputTranscription?.text)appendLiveInput(sc.inputTranscription.text);
       if(sc.interimInputTranscription?.text) addLiveTranscriptPreview('YOU',((liveInputText?liveInputText+' ':'')+sc.interimInputTranscription.text).trim());
       if(sc.outputTranscription?.text)appendLiveOutput(sc.outputTranscription.text);
-      for(const part of (sc.modelTurn?.parts||[])){if(part.inlineData?.data)playLivePcm(part.inlineData.data)}
+      for(const part of (sc.interrupted?[]:(sc.modelTurn?.parts||[]))){if(part.inlineData?.data)playLivePcm(part.inlineData.data)}
       if(sc.turnComplete){await commitLiveTurn();if(liveConnected&&!livePlaybackSources.length)setMode('listening','LISTENING')}
     };
-    liveSocket.onerror=()=>{deviceLog.textContent='Gemini Live bağlantısında hata oluştu.'};
-    liveSocket.onclose=()=>{liveConnected=false;liveSetupReady=false;stopLiveCapture();if(conversationMode){conversationMode=false;liveLoop=false;conversationBtn.textContent='◉ KARŞILIKLI KONUŞ';setMode('','STANDBY')}};
+    liveSocket.onerror=()=>{deviceLog.textContent='Gemini Live bağlantısında hata oluştu.';stopLiveConversation()};
+    liveSocket.onclose=(event)=>{if(sessionId!==liveSessionId)return;clearTimeout(liveConnectTimer);if(event.code!==1000)deviceLog.textContent='Canlı bağlantı kapandı ('+event.code+'). Model ve mikrofon erişimini kontrol et.';liveConnected=false;liveSetupReady=false;stopLiveCapture();if(conversationMode){conversationMode=false;liveLoop=false;conversationBtn.textContent='◉ KARŞILIKLI KONUŞ';setMode('','STANDBY')}};
   }catch(e){console.error('Gemini Live:',e);deviceLog.textContent='Live bağlantısı: '+(e?.message||'Bilinmeyen hata');stopLiveConversation()}
 }
 function startLiveCapture(){
   if(!liveMicStream||!liveAudioCtx||!liveSocket||liveProcessorNode)return;
   liveSourceNode=liveAudioCtx.createMediaStreamSource(liveMicStream);
-  liveProcessorNode=liveAudioCtx.createScriptProcessor(4096,1,1);liveMuteGain=liveAudioCtx.createGain();liveMuteGain.gain.value=0;
+  liveProcessorNode=liveAudioCtx.createScriptProcessor(2048,1,1);liveMuteGain=liveAudioCtx.createGain();liveMuteGain.gain.value=0;
   liveSourceNode.connect(liveProcessorNode);liveProcessorNode.connect(liveMuteGain);liveMuteGain.connect(liveAudioCtx.destination);
   liveProcessorNode.onaudioprocess=e=>{
     if(!liveSetupReady||!liveSocket||liveSocket.readyState!==1)return;
@@ -221,6 +223,7 @@ function stopLiveCapture(){
   listening=false;listenBtn.textContent='● LIVE / DİNLE';
 }
 function stopLiveConversation(){
+  ++liveSessionId;clearTimeout(liveConnectTimer);
   conversationMode=false;liveLoop=false;liveConnected=false;liveSetupReady=false;stopLiveCapture();stopLivePlayback();
   try{if(liveSocket&&liveSocket.readyState<=1)liveSocket.close()}catch(e){}liveSocket=null;conversationBtn.textContent='◉ KARŞILIKLI KONUŞ';setMode('','STANDBY');
 }
@@ -307,6 +310,6 @@ document.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('#mo
 <button data-go="hardware"><strong>⌁</strong>Donanım</button>
 <button data-go="settings"><strong>⋯</strong>Daha</button>
 </nav>
-<script src="/fast-voice.js"></script>
+<script src="/live-chat.js"></script>
 </body></html>
 

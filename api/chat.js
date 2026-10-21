@@ -34,9 +34,9 @@ export default async function handler(req, res) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: SYSTEM_PROMPT + `\n\nBugün: ${todayStr}` }] },
+        system_instruction: { parts: [{ text: (body.document ? `Sen Sirius, Merve'nin kişisel asistanısın. Kullanıcının istediği belgeyi Türkçe, eksiksiz ve düzenli yaz. Başlıklar ve paragraflar kullan. Bilmediğin bilgiyi uydurma. Gereken yerde kullanıcıdan bilgi iste.` : SYSTEM_PROMPT) + `\n\nBugün: ${todayStr}` }] },
         contents: fixed,
-        generationConfig: { temperature: 0.8, maxOutputTokens: 512, thinkingConfig: { thinkingBudget: 0 } },
+        generationConfig: { temperature: 0.8, maxOutputTokens: body.document ? 4096 : 512, thinkingConfig: { thinkingBudget: 0 } },
       }),
     })
     if (!r.ok) {
